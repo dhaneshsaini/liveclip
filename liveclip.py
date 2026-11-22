@@ -28,6 +28,8 @@ ap.add_argument("--cooldown", type=float, default=60, help="minimum seconds betw
 ap.add_argument("--warmup", type=float, default=60, help="seconds of chat to learn the normal rate before clipping")
 ap.add_argument("--max-clips", type=int, default=0, help="stop after this many clips (0 = no limit)")
 ap.add_argument("--duration", type=float, default=0, help="stop after this many seconds (0 = run until Ctrl+C)")
+ap.add_argument("--max-time", default="", help="stop after this duration (e.g. 24h, 120m, 3600s, or HH:MM:SS; up to 24 hours)")
+ap.add_argument("--start-time", default="", help="delay or scheduled time before starting (e.g. 10m, 1h, or HH:MM:SS)")
 ap.add_argument("--captions", choices=["hinglish", "english", "en", "hi", "auto", "off"], default="hinglish",
                 help="hinglish (default): Hindi/English speech in Roman letters. english: translated to English. "
                      "en/hi/auto: plain Whisper language setting. off: no captions")
@@ -48,6 +50,54 @@ LOG = os.path.join(OUT, "clips.csv")
 
 
 def say(*m): print(time.strftime("%H:%M:%S"), *m, flush=True)
+
+
+def parse_time_arg(val):
+    if not val: return 0.0
+    val = str(val).strip()
+    if not val: return 0.0
+    try:
+        return max(0.0, float(val))
+    except ValueError:
+        pass
+    parts = val.split(":")
+    if len(parts) == 3:
+        try: return max(0.0, float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2]))
+        except ValueError: pass
+    elif len(parts) == 2:
+        try: return max(0.0, float(parts[0]) * 60 + float(parts[1]))
+        except ValueError: pass
+    matches = re.findall(r'(\d+(?:\.\d+)?)\s*([hms])', val.lower())
+    if matches:
+        mults = {'h': 3600, 'm': 60, 's': 1}
+        return max(0.0, sum(float(n) * mults[u] for n, u in matches))
+    return 0.0
+
+
+def wait_for_start(start_val):
+    if not start_val: return
+    start_str = str(start_val).strip()
+    if not start_str or start_str in ("0", "00:00:00", "00:00"): return
+    parts = start_str.split(":")
+    delay = 0.0
+    if len(parts) in (2, 3):
+        now_lt = time.localtime()
+        target_h = int(parts[0])
+        target_m = int(parts[1])
+        target_s = int(parts[2]) if len(parts) == 3 else 0
+        now_sec = now_lt.tm_hour * 3600 + now_lt.tm_min * 60 + now_lt.tm_sec
+        tgt_sec = target_h * 3600 + target_m * 60 + target_s
+        if tgt_sec > now_sec:
+            delay = float(tgt_sec - now_sec)
+        elif tgt_sec < now_sec and (now_sec - tgt_sec) > 3600:
+            delay = float((86400 - now_sec) + tgt_sec)
+        else:
+            delay = parse_time_arg(start_str)
+    else:
+        delay = parse_time_arg(start_str)
+    if delay > 0:
+        say(f"Waiting {delay:.0f}s until stream starting time ({start_str})...")
+        time.sleep(delay)
 
 
 for tool in ("ffmpeg", "ffprobe"):
@@ -305,10 +355,16 @@ def ts(s):
 def main():
     say(f"liveclip -> {OUT}")
     say("Only clip streamers who allow it. " + ("Enter = clip now, Ctrl+C = stop." if sys.stdin.isatty() else "Stop = finish open clips and quit."))
+    if a.start_time: wait_for_start(a.start_time)
     rec_thread = threading.Thread(target=record, daemon=True); rec_thread.start()
     threading.Thread(target=chat, daemon=True).start()
     if a.captions != "off": threading.Thread(target=whisper, daemon=True).start()
     manual = threading.Event()
+
+    max_dur = parse_time_arg(a.max_time) or a.duration
+    if max_dur > 86400: max_dur = 86400.0   # cap at 24 hours
+    if max_dur:
+        say(f"Stream max time set: {max_dur / 3600:.1f}h ({max_dur:.0f}s)")
 
     def keys():
         for _ in sys.stdin: manual.set()
@@ -366,7 +422,9 @@ def main():
             # wait for the reaction to peak (the moment itself is ~5-20 s before the chat peaks)
             make(rec_now(), "chat spike", rate, base)
         if a.max_clips and n >= a.max_clips: break
-        if a.duration and now - t_begin > a.duration: break
+        if max_dur and now - t_begin > max_dur:
+            say(f"Reached stream max time ({max_dur / 3600:.1f}h). Stopping.")
+            break
     QUIT.set()
     if any(th.is_alive() for th in jobs):
         say("stopping, finishing clips… (still recording the last seconds; Ctrl+C again to quit now)")

@@ -83,6 +83,8 @@ The first time you run it, Whisper downloads its model (~1.5 GB for `medium`) wh
 | `--model medium` | Whisper size. `medium` (default) handles Hinglish well, about 10 s per clip. `small` is faster but garbles Hinglish |
 | `--layout crop` | Center-crop to 9:16 instead of the blurred-background layout |
 | `--max-clips 10 --duration 3600` | Stop after 10 clips or after 1 hour (the last clip is still finished) |
+| `--start-time 00:30:00` | Wait until delay or scheduled start time before recording |
+| `--max-time 24h` | Maximum stream duration to record/process (supports up to 24 hours: e.g. 24h, 120m, 3600s) |
 | `--device cuda` | Run Whisper on a GPU. `auto` (default) uses one when it's there |
 
 ## Use it with Claude Code

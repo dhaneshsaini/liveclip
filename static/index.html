@@ -128,6 +128,13 @@ nav { display: flex; align-items: center; justify-content: space-between }
 .chip { height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: rgba(8, 2, 18, .5); color: var(--muted);
   font: 600 13px Inter, sans-serif; cursor: pointer }
 .chip.on { color: #fff; border-color: transparent; background: var(--grad); box-shadow: 0 6px 18px rgba(255, 47, 122, .4) }
+.chip.mini { height: 28px; padding: 0 9px; font-size: 11px }
+.stream-row { display: flex; align-items: center; gap: 12px; margin-top: 10px; flex-wrap: wrap }
+.stream-item { display: flex; align-items: center; gap: 8px }
+.sublabel { font-size: 12px; font-weight: 600; color: var(--muted); white-space: nowrap }
+.time-inp { height: 34px; width: 95px; padding: 0 10px; border-radius: 10px; background: rgba(8, 2, 18, .5); border: 1px solid var(--line); color: var(--text); font: 500 13px Inter, sans-serif; outline: 0; transition: border-color .15s }
+.time-inp:focus { border-color: rgba(255, 138, 92, .8) }
+.time-chips { display: flex; gap: 4px; align-items: center; flex-wrap: wrap }
 .facerow { display: grid; grid-template-columns: 1fr 58px; gap: 14px; align-items: center }
 input[type=range] { width: 100%; -webkit-appearance: none; height: 6px; border-radius: 99px; outline: 0;
   background: linear-gradient(90deg, var(--acc), var(--acc2)) 0 / var(--p, 40%) 100% no-repeat, rgba(255, 255, 255, .14) }
@@ -199,6 +206,24 @@ footer { text-align: center; font-size: 12px; color: rgba(255, 255, 255, .55) }
           </label>
           <button class="btn" id="load">Get preview →</button>
         </div>
+        <div class="stream-row">
+          <div class="stream-item">
+            <span class="sublabel">Starting time</span>
+            <input class="time-inp" id="startTime" placeholder="00:00:00" value="00:00:00" title="Start clipping from this timestamp in the stream (e.g. 00:00:00, 01:30:00, or 45m)">
+          </div>
+          <div class="stream-item">
+            <span class="sublabel">Max time</span>
+            <input class="time-inp" id="maxTime" placeholder="24h" value="24h" title="Max stream duration to process (up to 24 hours / 1440m)">
+          </div>
+          <div class="time-chips" id="maxChips">
+            <button type="button" class="chip mini" data-t="30m">30m</button>
+            <button type="button" class="chip mini" data-t="1h">1h</button>
+            <button type="button" class="chip mini" data-t="2h">2h</button>
+            <button type="button" class="chip mini" data-t="6h">6h</button>
+            <button type="button" class="chip mini" data-t="12h">12h</button>
+            <button type="button" class="chip mini on" data-t="24h">24h</button>
+          </div>
+        </div>
       </div>
 
       <div class="card stagecard">
@@ -262,21 +287,37 @@ const S = { w: 0, h: 0, face: null, game: null, which: "face", n: 4, len: 30, st
 const msg = (t, err) => { $("#msg").textContent = t || ""; $("#msg").classList.toggle("err", !!err); };
 
 // 1. load
+document.querySelectorAll("#maxChips button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#maxChips button").forEach(x => x.classList.toggle("on", x === b));
+  $("#maxTime").value = b.dataset.t;
+});
+$("#maxTime").oninput = () => {
+  const val = $("#maxTime").value.trim().toLowerCase();
+  document.querySelectorAll("#maxChips button").forEach(x => x.classList.toggle("on", x.dataset.t === val));
+};
 $("#uplBtn").onclick = e => { e.preventDefault(); $("#file").click(); };
 $("#file").onchange = () => { const f = $("#file").files[0]; if (f) { $("#url").value = f.name; load(); } };
 $("#url").onkeydown = e => { if (e.key === "Enter") load(); };
+$("#startTime").onkeydown = e => { if (e.key === "Enter") load(); };
+$("#maxTime").onkeydown = e => { if (e.key === "Enter") load(); };
 $("#load").onclick = load;
 async function load() {
   const fd = new FormData(), f = $("#file").files[0];
   if (f && $("#url").value === f.name) fd.append("file", f); else fd.append("url", $("#url").value);
-  $("#load").disabled = true; $("#load").textContent = "Loading…"; msg(f ? "Uploading your video…" : "Downloading the video (720p). Long streams take a minute…");
+  fd.append("start_time", $("#startTime").value.trim());
+  fd.append("max_time", $("#maxTime").value.trim());
+  $("#load").disabled = true; $("#load").textContent = "Loading…"; msg(f ? "Uploading your video…" : "Downloading stream/video (720p). Long streams take a minute…");
   try {
     const r = await fetch("/api/load", { method: "POST", body: fd }), j = await r.json();
     if (!r.ok) throw new Error(j.detail || "Couldn't load that video");
     S.w = j.w; S.h = j.h; S.face = S.game = null;
     $("#img").src = j.preview; $("#empty").style.display = "none"; $("#imgbox").style.display = "inline-block"; $("#stage").classList.add("has");
     draw(); $("#go").disabled = false;
-    msg(`Loaded · ${Math.floor(j.dur / 60)} min ${j.dur % 60} s. Drag a box over the face.`);
+    const durH = Math.floor(j.dur / 3600), durM = Math.floor((j.dur % 3600) / 60), durS = j.dur % 60;
+    const durStr = durH > 0 ? `${durH}h ${durM}m ${durS}s` : `${durM} min ${durS} s`;
+    const startVal = $("#startTime").value.trim();
+    const startInfo = (startVal && startVal !== "00:00:00" && startVal !== "0") ? ` (from ${startVal})` : "";
+    msg(`Loaded · ${durStr}${startInfo}. Drag a box over the face.`);
   } catch (e) { msg(e.message, true); }
   $("#load").disabled = false; $("#load").textContent = "Get preview →";
 }

@@ -32,6 +32,38 @@ def duration(path):
     return float(r.stdout.strip() or 0)
 
 
+def parse_time_str(val):
+    """Parse time string like '01:30:00', '45:00', '90', '2h', '1h30m', '120m' into float seconds."""
+    if not val: return 0.0
+    val = str(val).strip()
+    if not val: return 0.0
+    try:
+        return max(0.0, float(val))
+    except ValueError:
+        pass
+    parts = val.split(":")
+    if len(parts) == 3:
+        try: return max(0.0, float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2]))
+        except ValueError: pass
+    elif len(parts) == 2:
+        try: return max(0.0, float(parts[0]) * 60 + float(parts[1]))
+        except ValueError: pass
+    import re
+    matches = re.findall(r'(\d+(?:\.\d+)?)\s*([hms])', val.lower())
+    if matches:
+        mults = {'h': 3600, 'm': 60, 's': 1}
+        return max(0.0, sum(float(n) * mults[u] for n, u in matches))
+    return 0.0
+
+
+def format_time_hms(sec):
+    sec = max(0, int(sec))
+    h = sec // 3600
+    m = (sec % 3600) // 60
+    s = sec % 60
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
 # ---------- 3. find the loudest moments ----------
 def find_moments(src, n, length):
     wav = os.path.join(WORK, "all.wav")
@@ -150,7 +182,7 @@ def make_clip(st, t0, length, face_pct, style, lang, name):
 
 # ---------- web API ----------
 app = FastAPI()
-ST = {"src": None, "dur": 0, "boxes": {"face": None, "game": None}}
+ST = {"src": None, "dur": 0, "start_time": 0.0, "max_time": 0.0, "boxes": {"face": None, "game": None}}
 JOB = {"busy": False, "progress": 0.0, "msg": "", "clips": [], "error": ""}
 
 
@@ -158,25 +190,63 @@ def preview_frame():
     prev = os.path.join(WORK, "preview.jpg")
     run("ffmpeg", "-v", "error", "-y", "-ss", f"{ST['dur'] * 0.3:.1f}", "-i", ST["src"], "-frames:v", "1", prev)
     w, h = Image.open(prev).size
-    return {"preview": f"/api/preview.jpg?t={time.time():.0f}", "w": w, "h": h, "dur": round(ST["dur"])}
+    return {
+        "preview": f"/api/preview.jpg?t={time.time():.0f}",
+        "w": w,
+        "h": h,
+        "dur": round(ST["dur"]),
+        "start_time": ST.get("start_time", 0.0),
+        "max_time": ST.get("max_time", 0.0),
+    }
 
 
 @app.post("/api/load")
-async def api_load(url: str = Form(""), file: UploadFile | None = File(None)):
+async def api_load(
+    url: str = Form(""),
+    file: UploadFile | None = File(None),
+    start_time: str = Form(""),
+    max_time: str = Form(""),
+):
     if JOB["busy"]: raise HTTPException(409, "Still making clips, wait for them to finish.")
     shutil.rmtree(WORK, ignore_errors=True); os.makedirs(WORK)
     src = os.path.join(WORK, "src.mp4")
+    t_start = parse_time_str(start_time)
+    t_max = parse_time_str(max_time)
+    # Stream max limit: up to 24 hours (86400 seconds)
+    if t_max > 86400: t_max = 86400.0
+
     if file is not None and file.filename:
-        with open(src, "wb") as f: shutil.copyfileobj(file.file, f)
+        raw = os.path.join(WORK, "raw_" + file.filename)
+        with open(raw, "wb") as f: shutil.copyfileobj(file.file, f)
+        if t_start > 0 or t_max > 0:
+            trim_args = ["ffmpeg", "-v", "error", "-y", "-ss", f"{t_start:.2f}"]
+            if t_max > 0: trim_args += ["-t", f"{t_max:.2f}"]
+            trim_args += ["-i", raw, "-c", "copy", src]
+            try:
+                run(*trim_args)
+                if not os.path.exists(src) or duration(src) < 0.5:
+                    raise RuntimeError("copy trim too short")
+            except Exception:
+                run("ffmpeg", "-v", "error", "-y", "-ss", f"{t_start:.2f}",
+                    *(["-t", f"{t_max:.2f}"] if t_max > 0 else []),
+                    "-i", raw, "-c:v", "libx264", "-preset", "ultrafast", "-c:a", "aac", src)
+        else:
+            shutil.move(raw, src)
     elif url.strip():
+        cmd = [sys.executable, "-m", "yt_dlp", "-f", "bv*[height<=720]+ba/b[height<=720]/b",
+               "--merge-output-format", "mp4"]
+        if t_start > 0 or t_max > 0:
+            end_sec = (t_start + t_max) if t_max > 0 else (t_start + 86400)
+            cmd += ["--download-sections", f"*{format_time_hms(t_start)}-{format_time_hms(end_sec)}",
+                    "--force-keyframes-at-cuts"]
+        cmd += ["-o", src, "--no-playlist", url.strip()]
         try:
-            run(sys.executable, "-m", "yt_dlp", "-f", "bv*[height<=720]+ba/b[height<=720]/b", "--merge-output-format", "mp4",
-                "-o", src, "--no-playlist", url.strip())
+            run(*cmd)
         except Exception as e:
             raise HTTPException(400, f"Couldn't download that link. Check it opens in your browser. ({e})")
     else:
         raise HTTPException(400, "Paste a link or choose a video file first.")
-    ST.update(src=src, dur=duration(src), boxes={"face": None, "game": None})
+    ST.update(src=src, dur=duration(src), start_time=t_start, max_time=t_max, boxes={"face": None, "game": None})
     return preview_frame()
 
 
