@@ -1,5 +1,7 @@
 # liveclip: clip a live stream while it's still live
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Aadi1659/liveclip/blob/main/liveclip_colab.ipynb)
+
 Most clippers download the whole stream after it ends, then spend hours looking for moments. By then the first clips are already up and have taken the views.
 
 liveclip works **during** the stream:
