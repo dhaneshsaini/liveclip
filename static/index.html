@@ -124,7 +124,9 @@ nav { display: flex; align-items: center; justify-content: space-between }
 .k { font-size: 13px; font-weight: 600; color: var(--muted) }
 .stepper { display: inline-flex; align-items: center; border-radius: 12px; border: 1px solid var(--line); background: rgba(8, 2, 18, .5) }
 .stepper button { width: 34px; height: 34px; border: 0; background: none; color: var(--text); font-size: 18px; cursor: pointer }
-.stepper output { width: 30px; text-align: center; font-weight: 700 }
+.stepper input { width: 55px; height: 34px; text-align: center; font: 700 14px Inter, sans-serif; border: 0; background: none; color: var(--text); outline: 0 }
+.stepper input::-webkit-inner-spin-button, .stepper input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0 }
+.stepper input[type=number] { -moz-appearance: textfield }
 .chips { display: flex; gap: 6px }
 .chip { height: 34px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line); background: rgba(8, 2, 18, .5); color: var(--muted);
   font: 600 13px Inter, sans-serif; cursor: pointer }
@@ -252,8 +254,8 @@ footer { text-align: center; font-size: 12px; color: rgba(255, 255, 255, .55) }
 
     <div class="card right">
       <div class="label" style="margin:0"><span class="n">3</span>Your style</div>
-      <div class="row"><span class="k">Number of clips</span>
-        <div class="stepper"><button data-d="-1">−</button><output id="n">4</output><button data-d="1">+</button></div></div>
+      <div class="row"><span class="k">Number of clips (1 - 1000)</span>
+        <div class="stepper"><button data-d="-1" type="button">−</button><input type="number" id="n" min="1" max="1000" value="4"><button data-d="1" type="button">+</button></div></div>
       <div class="row"><span class="k">Clip length</span>
         <div class="chips" id="len"><button class="chip" data-v="15">15s</button><button class="chip on" data-v="30">30s</button><button class="chip" data-v="45">45s</button><button class="chip" data-v="60">60s</button></div></div>
       <div>
@@ -353,7 +355,18 @@ function draw() {
 window.onresize = draw; $("#img").onload = draw;
 
 // 3. settings
-document.querySelectorAll(".stepper button").forEach(b => b.onclick = () => { S.n = Math.max(1, Math.min(10, S.n + +b.dataset.d)); $("#n").textContent = S.n; });
+const nInp = $("#n");
+document.querySelectorAll(".stepper button").forEach(b => b.onclick = () => {
+  S.n = Math.max(1, Math.min(1000, (+nInp.value || 1) + +b.dataset.d));
+  nInp.value = S.n;
+});
+nInp.oninput = () => {
+  let val = parseInt(nInp.value, 10);
+  if (!isNaN(val)) S.n = Math.max(1, Math.min(1000, val));
+};
+nInp.onblur = () => {
+  nInp.value = S.n;
+};
 const pick = (sel, key) => document.querySelectorAll(sel + " button").forEach(b => b.onclick = () => {
   document.querySelectorAll(sel + " button").forEach(x => x.classList.toggle("on", x === b)); S[key] = isNaN(b.dataset.v) ? b.dataset.v : +b.dataset.v; });
 pick("#len", "len"); pick("#style", "style");

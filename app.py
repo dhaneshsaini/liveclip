@@ -258,7 +258,8 @@ def api_preview():
 def worker(opts):
     try:
         JOB.update(busy=True, progress=0.03, msg="Finding the best moments", clips=[], error="")
-        starts = find_moments(ST["src"], int(opts["n"]), int(opts["length"]))
+        n_clips = max(1, min(1000, int(opts.get("n", 4))))
+        starts = find_moments(ST["src"], n_clips, int(opts["length"]))
         base = "clip_" + time.strftime("%Y%m%d_%H%M%S")
         for k, t0 in enumerate(starts):
             JOB.update(progress=0.08 + 0.9 * k / len(starts), msg=f"Making clip {k + 1} of {len(starts)}")
