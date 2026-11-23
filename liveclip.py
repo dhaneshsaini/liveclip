@@ -29,7 +29,8 @@ ap.add_argument("--warmup", type=float, default=60, help="seconds of chat to lea
 ap.add_argument("--max-clips", type=int, default=0, help="stop after this many clips (0 = no limit)")
 ap.add_argument("--duration", type=float, default=0, help="stop after this many seconds (0 = run until Ctrl+C)")
 ap.add_argument("--max-time", default="", help="stop after this duration (e.g. 24h, 120m, 3600s, or HH:MM:SS; up to 24 hours)")
-ap.add_argument("--start-time", default="", help="delay or scheduled time before starting (e.g. 10m, 1h, or HH:MM:SS)")
+ap.add_argument("--start-time", default="", help="start timestamp or delay before starting (e.g. 02:20:22, 10m, 1h, or HH:MM:SS)")
+ap.add_argument("--end-time", default="", help="stop clipping at this timestamp in the video/stream (e.g. 05:20:12, 2h, or 24:00:00)")
 ap.add_argument("--captions", choices=["hinglish", "english", "en", "hi", "auto", "off"], default="hinglish",
                 help="hinglish (default): Hindi/English speech in Roman letters. english: translated to English. "
                      "en/hi/auto: plain Whisper language setting. off: no captions")
@@ -103,7 +104,18 @@ def wait_for_start(start_val):
 for tool in ("ffmpeg", "ffprobe"):
     if not shutil.which(tool): sys.exit(f"{tool} not found. Install FFmpeg first (Mac: brew install ffmpeg).")
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-STREAMLINK = shutil.which("streamlink") or os.path.join(os.path.dirname(sys.executable), "streamlink")
+def find_streamlink():
+    which = shutil.which("streamlink")
+    if which: return which
+    for candidate in [
+        os.path.join(os.path.dirname(sys.executable), "streamlink"),
+        os.path.join(os.path.dirname(sys.executable), "streamlink.exe"),
+        os.path.join(os.path.dirname(sys.executable), "Scripts", "streamlink.exe"),
+        os.path.join(os.path.dirname(sys.executable), "bin", "streamlink"),
+    ]:
+        if os.path.exists(candidate): return candidate
+    return "streamlink"
+STREAMLINK = find_streamlink()
 
 # ------------------------------------------------------------------ 1. record (streamlink -> ffmpeg 6 s segments)
 rec_start = None
@@ -112,17 +124,67 @@ rec_start = None
 def record():
     global rec_start
     shutil.rmtree(REC, ignore_errors=True); os.makedirs(REC, exist_ok=True)   # leftovers from a force-stopped run
+    if os.path.isfile(a.url):
+        say(f"Processing local video file: {a.url}")
+        t_s = parse_time_arg(a.start_time)
+        t_e = parse_time_arg(a.end_time)
+        cmd = ["ffmpeg", "-v", "fatal"]
+        if t_s > 0: cmd += ["-ss", f"{t_s:.2f}"]
+        if t_e > t_s: cmd += ["-t", f"{t_e - t_s:.2f}"]
+        cmd += ["-i", a.url, "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                "-f", "segment", "-segment_time", "6", "-segment_list", SEGLIST, "-segment_list_type", "csv",
+                os.path.join(REC, "seg_%06d.ts")]
+        ff = subprocess.Popen(cmd, start_new_session=(sys.platform != "win32"))
+        rec_start = time.time(); say("reading file segments started")
+        while not STOP.is_set():
+            if ff.poll() is not None:
+                say("finished reading video file"); STOP.set(); break
+            time.sleep(0.5)
+        if ff.poll() is None: ff.terminate()
+        return
+
     sl = subprocess.Popen([STREAMLINK, "--stdout", "--hls-live-edge", "2", a.url, a.quality],
-                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, start_new_session=True)
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          start_new_session=(sys.platform != "win32"))
+    # Check if streamlink exits quickly (e.g. stream offline / ended VOD)
+    time.sleep(1.0)
+    if sl.poll() is not None:
+        err = ""
+        if sl.stderr:
+            try: err = sl.stderr.read().decode("utf-8", "ignore").strip()
+            except Exception: pass
+        say(f"Live stream offline or ended ({err.splitlines()[-1] if err else 'ended stream'}). Streaming with yt-dlp...")
+        t_s = parse_time_arg(a.start_time)
+        t_e = parse_time_arg(a.end_time)
+        ytdlp_cmd = [sys.executable, "-m", "yt_dlp", "-o", "-", "-f", "bv*[height<=720]+ba/b[height<=720]/b"]
+        if t_s > 0 or (t_e > 0 and t_e < 86400):
+            end_sec = t_e if (t_e > t_s) else (t_s + 86400)
+            ytdlp_cmd += ["--download-sections", f"*{int(t_s)}-{int(end_sec)}", "--force-keyframes-at-cuts"]
+        ytdlp_cmd += [a.url]
+        try:
+            sl = subprocess.Popen(ytdlp_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  start_new_session=(sys.platform != "win32"))
+        except Exception as e:
+            say(f"yt-dlp fallback error: {e}")
+            STOP.set()
+            return
+
     ff = subprocess.Popen(["ffmpeg", "-v", "fatal", "-i", "pipe:0", "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
                            "-f", "segment", "-segment_time", "6", "-segment_list", SEGLIST, "-segment_list_type", "csv",
-                           os.path.join(REC, "seg_%06d.ts")], stdin=sl.stdout, start_new_session=True)
+                           os.path.join(REC, "seg_%06d.ts")], stdin=sl.stdout,
+                          start_new_session=(sys.platform != "win32"))
     sl.stdout.close()
     while not STOP.is_set():
         if rec_start is None and os.path.exists(os.path.join(REC, "seg_000000.ts")):
             rec_start = time.time(); say("recording started")
         if ff.poll() is not None:
-            say("recording stopped (stream ended or went offline)"); STOP.set(); break
+            err = ""
+            if sl.poll() is not None and sl.stderr:
+                try: err = sl.stderr.read().decode("utf-8", "ignore").strip()
+                except Exception: pass
+            if err:
+                say(f"source: {err.splitlines()[-1]}")
+            say("recording stopped (stream ended, video finished, or went offline)"); STOP.set(); break
         time.sleep(0.2)
     for p in (sl, ff):
         if p.poll() is None: p.terminate()
@@ -313,7 +375,7 @@ def _cut(t0, t1, name):
     t1 = min(t1, segs[-1][2])
     tmp = os.path.join(REC, name); os.makedirs(tmp, exist_ok=True)
     lst = os.path.join(tmp, "list.txt")
-    open(lst, "w").write("".join(f"file '{f}'\n" for f, _, _ in segs))
+    open(lst, "w").write("".join(f"file '{f.replace(os.sep, '/')}'\n" for f, _, _ in segs))
     raw = os.path.join(tmp, "raw.ts")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", raw], check=True)
     ss, dur = max(0, t0 - segs[0][1]), t1 - t0
@@ -361,10 +423,17 @@ def main():
     if a.captions != "off": threading.Thread(target=whisper, daemon=True).start()
     manual = threading.Event()
 
+    t_start = parse_time_arg(a.start_time)
+    t_end = parse_time_arg(a.end_time)
     max_dur = parse_time_arg(a.max_time) or a.duration
-    if max_dur > 86400: max_dur = 86400.0   # cap at 24 hours
+    if t_end > t_start:
+        max_dur = min(t_end - t_start, 86400.0)
+    elif t_end > 0:
+        max_dur = min(t_end, 86400.0)
+    elif max_dur > 86400:
+        max_dur = 86400.0   # cap at 24 hours
     if max_dur:
-        say(f"Stream max time set: {max_dur / 3600:.1f}h ({max_dur:.0f}s)")
+        say(f"Max processing time set: {max_dur / 3600:.1f}h ({max_dur:.0f}s)")
 
     def keys():
         for _ in sys.stdin: manual.set()

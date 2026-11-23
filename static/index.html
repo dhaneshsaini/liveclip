@@ -205,7 +205,7 @@ footer { text-align: center; font-size: 12px; color: rgba(255, 255, 255, .55) }
   <div class="main">
     <div class="left">
       <div class="card">
-        <div class="label"><span class="n">1</span>Add your video <span class="h">YouTube / Twitch link, or a file</span></div>
+        <div class="label"><span class="n">1</span>Add your video <span class="h">Live stream, ended stream (VOD), or uploaded video (up to 24h)</span></div>
         <div class="inrow">
           <label class="field">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,.55)" stroke-width="2"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>
@@ -217,21 +217,23 @@ footer { text-align: center; font-size: 12px; color: rgba(255, 255, 255, .55) }
         </div>
         <div class="stream-row">
           <div class="stream-item">
-            <span class="sublabel">Starting time</span>
-            <input class="time-inp" id="startTime" placeholder="00:00:00" value="00:00:00" title="Start clipping from this timestamp in the stream (e.g. 00:00:00, 01:30:00, or 45m)">
+            <span class="sublabel">Start time</span>
+            <input class="time-inp" id="startTime" placeholder="00:00:00" value="00:00:00" title="Start timestamp (e.g. 00:00:00, 02:20:22, or 30m)">
           </div>
           <div class="stream-item">
-            <span class="sublabel">Max time</span>
-            <input class="time-inp" id="maxTime" placeholder="24h" value="24h" title="Max stream duration to process (up to 24 hours / 1440m)">
+            <span class="sublabel">End time</span>
+            <input class="time-inp" id="endTime" placeholder="24:00:00" value="24:00:00" title="End timestamp (e.g. 05:20:12, 24:00:00, or duration like 1h, 30m)">
           </div>
-          <div class="time-chips" id="maxChips">
-            <button type="button" class="chip mini" data-t="30m">30m</button>
-            <button type="button" class="chip mini" data-t="1h">1h</button>
-            <button type="button" class="chip mini" data-t="2h">2h</button>
-            <button type="button" class="chip mini" data-t="6h">6h</button>
-            <button type="button" class="chip mini" data-t="12h">12h</button>
-            <button type="button" class="chip mini on" data-t="24h">24h</button>
+          <div class="time-chips" id="rangeChips">
+            <span class="sublabel" style="opacity:0.7">+Duration:</span>
+            <button type="button" class="chip mini" data-dur="1800">30m</button>
+            <button type="button" class="chip mini" data-dur="3600">1h</button>
+            <button type="button" class="chip mini" data-dur="7200">2h</button>
+            <button type="button" class="chip mini" data-dur="14400">4h</button>
+            <button type="button" class="chip mini" data-dur="28800">8h</button>
+            <button type="button" class="chip mini on" data-dur="86400">Full (24h)</button>
           </div>
+          <div id="timeBadge" style="font-size:12px;font-weight:600;color:var(--muted);margin-left:auto;white-space:nowrap">Window: 00:00:00 → 24:00:00 (24h)</div>
         </div>
       </div>
 
@@ -296,25 +298,90 @@ const S = { w: 0, h: 0, face: null, game: null, which: "face", n: 4, len: 30, st
 const msg = (t, err) => { $("#msg").textContent = t || ""; $("#msg").classList.toggle("err", !!err); };
 
 // 1. load
-document.querySelectorAll("#maxChips button").forEach(b => b.onclick = () => {
-  document.querySelectorAll("#maxChips button").forEach(x => x.classList.toggle("on", x === b));
-  $("#maxTime").value = b.dataset.t;
+function parseTimeToSec(val) {
+  if (!val) return 0;
+  const s = String(val).trim().toLowerCase();
+  if (!s || s === "0" || s === "00:00:00") return 0;
+  const num = parseFloat(s);
+  if (!isNaN(num) && !s.includes(":") && !s.includes("h") && !s.includes("m") && !s.includes("s")) return Math.max(0, num);
+  const parts = s.split(":");
+  if (parts.length === 3) {
+    const h = parseFloat(parts[0]) || 0, m = parseFloat(parts[1]) || 0, sec = parseFloat(parts[2]) || 0;
+    return Math.max(0, h * 3600 + m * 60 + sec);
+  }
+  if (parts.length === 2) {
+    const m = parseFloat(parts[0]) || 0, sec = parseFloat(parts[1]) || 0;
+    return Math.max(0, m * 60 + sec);
+  }
+  let total = 0, found = false;
+  const re = /(\d+(?:\.\d+)?)\s*([hms])/g;
+  let match;
+  while ((match = re.exec(s)) !== null) {
+    found = true;
+    const v = parseFloat(match[1]), u = match[2];
+    if (u === 'h') total += v * 3600;
+    else if (u === 'm') total += v * 60;
+    else if (u === 's') total += v;
+  }
+  return found ? Math.max(0, total) : Math.max(0, parseFloat(s) || 0);
+}
+
+function secToHMS(sec) {
+  const s = Math.max(0, Math.round(sec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rem = s % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+}
+
+function formatDurLabel(durSec) {
+  const s = Math.max(0, Math.round(durSec));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const rem = s % 60;
+  if (h > 0) return `${h}h ${m}m ${rem}s`;
+  if (m > 0) return `${m}m ${rem}s`;
+  return `${rem}s`;
+}
+
+function updateTimeRange() {
+  const t0 = parseTimeToSec($("#startTime").value);
+  const rawEnd = $("#endTime").value.trim();
+  let t1 = parseTimeToSec(rawEnd);
+  if (!rawEnd || t1 <= 0) t1 = t0 + 86400;
+  else if (t1 <= t0) t1 = t0 + Math.min(t1, 86400);
+  const dur = Math.max(0, Math.min(86400, t1 - t0));
+  const startStr = secToHMS(t0);
+  const endStr = secToHMS(t0 + dur);
+  $("#timeBadge").textContent = `Window: ${startStr} → ${endStr} (${formatDurLabel(dur)})`;
+}
+
+document.querySelectorAll("#rangeChips button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("#rangeChips button").forEach(x => x.classList.toggle("on", x === b));
+  const dur = parseFloat(b.dataset.dur) || 86400;
+  const t0 = parseTimeToSec($("#startTime").value);
+  $("#endTime").value = secToHMS(t0 + dur);
+  updateTimeRange();
 });
-$("#maxTime").oninput = () => {
-  const val = $("#maxTime").value.trim().toLowerCase();
-  document.querySelectorAll("#maxChips button").forEach(x => x.classList.toggle("on", x.dataset.t === val));
+
+$("#startTime").oninput = updateTimeRange;
+$("#endTime").oninput = () => {
+  document.querySelectorAll("#rangeChips button").forEach(x => x.classList.remove("on"));
+  updateTimeRange();
 };
+
 $("#uplBtn").onclick = e => { e.preventDefault(); $("#file").click(); };
 $("#file").onchange = () => { const f = $("#file").files[0]; if (f) { $("#url").value = f.name; load(); } };
 $("#url").onkeydown = e => { if (e.key === "Enter") load(); };
 $("#startTime").onkeydown = e => { if (e.key === "Enter") load(); };
-$("#maxTime").onkeydown = e => { if (e.key === "Enter") load(); };
+$("#endTime").onkeydown = e => { if (e.key === "Enter") load(); };
 $("#load").onclick = load;
 async function load() {
   const fd = new FormData(), f = $("#file").files[0];
   if (f && $("#url").value === f.name) fd.append("file", f); else fd.append("url", $("#url").value);
   fd.append("start_time", $("#startTime").value.trim());
-  fd.append("max_time", $("#maxTime").value.trim());
+  fd.append("end_time", $("#endTime").value.trim());
+  fd.append("max_time", $("#endTime").value.trim());
   $("#load").disabled = true; $("#load").textContent = "Loading…"; msg(f ? "Uploading your video…" : "Downloading stream/video (720p). Long streams take a minute…");
   try {
     const r = await fetch("/api/load", { method: "POST", body: fd }), j = await r.json();
@@ -322,11 +389,12 @@ async function load() {
     S.w = j.w; S.h = j.h; S.face = S.game = null;
     $("#img").src = j.preview; $("#empty").style.display = "none"; $("#imgbox").style.display = "inline-block"; $("#stage").classList.add("has");
     draw(); $("#go").disabled = false;
-    const durH = Math.floor(j.dur / 3600), durM = Math.floor((j.dur % 3600) / 60), durS = j.dur % 60;
+    const durH = Math.floor(j.dur / 3600), durM = Math.floor((j.dur % 3600) / 60), durS = Math.floor(j.dur % 60);
     const durStr = durH > 0 ? `${durH}h ${durM}m ${durS}s` : `${durM} min ${durS} s`;
     const startVal = $("#startTime").value.trim();
-    const startInfo = (startVal && startVal !== "00:00:00" && startVal !== "0") ? ` (from ${startVal})` : "";
-    msg(`Loaded · ${durStr}${startInfo}. Drag a box over the face.`);
+    const endVal = $("#endTime").value.trim();
+    const rangeInfo = (startVal && startVal !== "00:00:00") || (endVal && endVal !== "24:00:00") ? ` (${startVal} → ${endVal})` : "";
+    msg(`Loaded · ${durStr}${rangeInfo}. Drag a box over the face.`);
   } catch (e) { msg(e.message, true); }
   $("#load").disabled = false; $("#load").textContent = "Get preview →";
 }
@@ -375,7 +443,18 @@ const face = $("#face"); const upd = () => { $("#facev").textContent = face.valu
 
 // 4. make clips
 $("#go").onclick = async () => {
-  const body = { face: S.face, game: S.game, n: S.n, length: S.len, face_pct: +face.value, style: S.style, lang: $("#lang").value };
+  const nVal = +$("#n").value || S.n || 4;
+  const body = {
+    face: S.face,
+    game: S.game,
+    n: nVal,
+    length: S.len,
+    face_pct: +face.value,
+    style: S.style,
+    lang: $("#lang").value,
+    start_time: $("#startTime").value.trim(),
+    end_time: $("#endTime").value.trim()
+  };
   const r = await fetch("/api/clip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   if (!r.ok) { msg((await r.json()).detail, true); return; }
   $("#go").disabled = true; $("#prog").style.display = "block"; poll();
